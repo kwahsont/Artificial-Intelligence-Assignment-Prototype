@@ -2,8 +2,10 @@
  *
  * Data sources
  *  - data/dashboard_data.js    trained decision tree + survey summary (built by src/train_model.py)
- *  - data/academic_calendar.js UTP semester periods + public holidays
- *  - Open-Meteo APIs           live hourly weather + air-quality (haze) forecast for UTP,
+ *  - data/academic_calendar.js UTP semester periods + public holidays printed in the UTP calendar
+ *  - data/public_holidays.js   Perak public holidays pulled by src/update_holidays.py
+ *                              (refreshed weekly by a GitHub Action)
+ *  - Open-Meteo APIs          live hourly weather + air-quality (haze) forecast for UTP,
  *                              re-fetched every 10 minutes while the page is open
  *
  * The decision tree trained in Python is walked node-by-node here, so the browser
@@ -13,6 +15,17 @@
   "use strict";
   const D = window.DASHBOARD_DATA;
   const CAL = window.ACADEMIC_CALENDAR || { periods: [], public_holidays: [] };
+  const PH = window.PUBLIC_HOLIDAYS || { holidays: [] };
+  // One holiday list: UTP-calendar holidays + the pulled Perak gazette (a date in either counts)
+  const HOLIDAYS = new Map();
+  (CAL.public_holidays || []).forEach((h) => HOLIDAYS.set(h.date, { date: h.date, name: h.name, src: "UTP calendar" }));
+  (PH.holidays || []).forEach((h) => {
+    const e = HOLIDAYS.get(h.date);
+    if (e) e.src = "UTP calendar + gazette";
+    else HOLIDAYS.set(h.date, { date: h.date, name: h.name, src: h.scope === "Perak" ? "Perak gazette" : "national gazette" });
+  });
+  const HOLIDAY_LIST = [...HOLIDAYS.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+  const holidayOn = (iso) => HOLIDAYS.get(iso);
   if (!D) { document.body.innerHTML = "<p style='padding:40px;color:#fff'>dashboard_data.js missing - run <code>python src/run_all.py</code>.</p>"; return; }
 
   const S = D.survey, M = S.multipliers, CFG = D.settings, TREE = D.tree;
@@ -94,8 +107,8 @@
       return t ? Math.floor((toDate(iso) - toDate(t.start)) / 864e5 / 7) + 1 : null;
     };
     const semLine = p ? p.semester + (p.estimated ? " · estimated dates" : "") : "";
-    const hol = (CAL.public_holidays || []).find((h) => h.date === iso);
-    if (hol) return { calendar: "Holiday / break", title: hol.name, sub: "Public holiday" + (p ? ` · ${p.semester}` : ""), ico: "🏖️" };
+    const hol = holidayOn(iso);
+    if (hol) return { calendar: "Holiday / break", title: hol.name, sub: `Public holiday (${hol.src})` + (p ? ` · ${p.semester}` : ""), ico: "🏖️", holiday: true };
     if (!p) return { calendar: "Normal week", title: "No calendar entry", sub: "Treated as a normal week", ico: "📘" };
     if (p.type === "teaching") return { calendar: "Normal week", title: `Lecture week ${lectureWeek()}`, sub: semLine, ico: "📘" };
     if (p.type === "blended") return { calendar: "Normal week", title: `Lecture week ${lectureWeek()} · blended learning`, sub: semLine + " · some classes online", ico: "💻" };
@@ -185,6 +198,8 @@
     const cal = calendarFor(iso);
     const wx = weatherAt(iso, hour);
     const base = { date: iso, min, hour, period, meal: period.meal, shortBreak: state.shortBreak, cal, wx };
+    if (opts.forceLive) // auto analysis: always the real forecast + calendar, ignoring what-if overrides
+      return { ...base, forceLive: true, day: CFG.days[dowIdx(iso)], calendar: cal.calendar, weather: wx ? wx.weather : "Clear", src: { cal: "live", wx: wx ? "live" : "fallback" } };
     if (!state.live) {
       return { ...base, day: opts.day || state.day, calendar: state.calendar, weather: state.weather, src: { cal: "manual", wx: "manual" } };
     }
@@ -253,7 +268,7 @@
     // day demand = day + calendar + class breaks only (weather is handled by the fuzzy rain/air inputs)
     const dayDem = demand({ ...sc, weather: "Clear" }).value * 100;
     const raw = WX.hours[sc.date] && WX.hours[sc.date][sc.hour];
-    const useLive = state.live && !state.ovWx && raw;
+    const useLive = (sc.forceLive || (state.live && !state.ovWx)) && raw;
     const cat = FZ.category_values[sc.weather] || FZ.category_values.Clear;
     return {
       day_demand: dayDem,
@@ -381,7 +396,9 @@
         const sc = scenarioFor(state.date);
         Object.assign(state, { day: sc.day, calendar: sc.calendar, weather: sc.weather });
       }
-      state.live = e.target.checked; state.ovCal = state.ovWx = false; render();
+      state.live = e.target.checked; state.ovCal = state.ovWx = false;
+      $("whatif").open = !state.live;
+      render();
     };
     $("reset-live").onclick = () => { state.ovCal = state.ovWx = false; render(); };
     $("short-break").onchange = (e) => { state.shortBreak = e.target.checked; render(); };
@@ -400,8 +417,7 @@
 
   function calKind(iso) {
     const c = calendarFor(iso);
-    const isHol = (CAL.public_holidays || []).some((h) => h.date === iso);
-    if (isHol) return { kind: "hol", c };
+    if (c.holiday) return { kind: "hol", c };
     if (c.calendar === "Exam week") return { kind: "exam", c };
     if (c.calendar === "Holiday / break") return { kind: "brk", c };
     if (/Lecture week/.test(c.title)) return { kind: /blended/.test(c.title) ? "blend" : "lec", c };
@@ -413,8 +429,7 @@
     const days = Array.from({ length: 7 }, (_, k) => calendarFor(addDays(monIso, k)));
     const lec = days.map((c) => c.title.match(/Lecture week (\d+)/)).find(Boolean);
     if (lec) return { long: `Lecture week ${lec[1]}`, short: `W${lec[1]}` };
-    const isHolName = (c) => (CAL.public_holidays || []).some((h) => h.name === c.title);
-    const periods = [...new Set(days.slice(0, 5).filter((c) => c.title !== "No calendar entry" && !isHolName(c)).map((c) => c.title))];
+    const periods = [...new Set(days.slice(0, 5).filter((c) => c.title !== "No calendar entry" && !c.holiday).map((c) => c.title))];
     const main = days.slice(0, 5).find((c) => c.title === periods[0]) || days[2];
     const short = main.calendar === "Exam week" ? (/Study/.test(main.title) ? "Study" : "Exam") : main.calendar === "Holiday / break" ? (/Orientation/.test(main.title) ? "Orient." : "Break") : "";
     const long = periods.length ? periods.slice(0, 2).join(" → ") : "Outside the semester";
@@ -560,6 +575,172 @@
     badge("b-cal", sc.src.cal);
     badge("b-wx", sc.src.wx);
     $("reset-live").hidden = !(state.live && (state.ovCal || state.ovWx));
+    renderAutoBox(sc);
+  }
+
+  /* ----------------------------------- auto-detected inputs (left panel) */
+  const calMult = (cal) => (cal === "Exam week" ? M.exam_week : cal === "Holiday / break" ? M.holiday : 1);
+  const dayMult = (d) => (d === "Fri" ? M.friday : d === "Sat" || d === "Sun" ? M.weekend : 1);
+  const xf = (m) => (m === 1 ? "normal footfall" : `footfall ×${m.toFixed(2)}`);
+
+  function renderAutoBox(sc) {
+    const live = scenarioFor(state.date, state.time, { forceLive: true });
+    const c = live.cal, wx = live.wx, d = live.day;
+    const wxSub = wx ? `${wx.weather} · ${wx.sub}`
+      : WX.status === "loading" ? "Fetching the Open-Meteo forecast…"
+      : WX.last && state.date > WX.last ? `Beyond the 16-day forecast (ends ${shortDate(WX.last)}) · assumed clear`
+      : "Forecast unavailable · assumed clear";
+    const wxM = wx ? (wx.weather === "Heavy rain" ? M.heavy_rain : wx.weather === "Haze" ? M.haze : 1) : 1;
+    const rows = [
+      ["📅", `${DAY_FULL[d]}${d === "Sat" || d === "Sun" ? " · weekend" : ""}`, xf(dayMult(d))],
+      [c.ico, c.title, `${c.calendar} · ${xf(calMult(c.calendar))}${c.sub ? " · " + c.sub : ""}`],
+      [wx ? wx.ico : "🛰️", wx ? `${wx.title} at ${fmtHour(live.hour)}` : "No hourly forecast", wx ? `${wxSub} · ${xf(wxM)}` : wxSub],
+    ];
+    const over = !state.live || state.ovCal || state.ovWx;
+    $("auto-box").innerHTML = rows.map(([i, t, s]) => `<div class="auto-row"><span class="auto-ico">${i}</span><span><b>${t}</b><small>${s}</small></span></div>`).join("") +
+      (over ? `<div class="auto-warn">⚠ ${state.live ? "A what-if override is on" : "Live data is off"}: the prediction uses the values you set below, not these.</div>` : "");
+    if (over) $("whatif").open = true;
+  }
+
+  /* ------------------------------------ automatic forecast & calendar analysis */
+  const REP_MIN = { breakfast: 480, lunch: 750, tea: 960, dinner: 1110, supper: 1290 };
+  const hourRanges = (hs) => {
+    const r = [];
+    hs.forEach((h) => { const l = r[r.length - 1]; if (l && l[1] === h - 1) l[1] = h; else r.push([h, h]); });
+    return r.map(([a, b]) => `${fmtHour(a)}–${fmtHour(b + 1)}`).join(", ");
+  };
+  const dayName = (iso) => `${CFG.days[dowIdx(iso)]} ${shortDate(iso)}`;
+  const daysAway = (iso) => {
+    const n = Math.round((toDate(iso) - toDate(todayKL())) / 864e5);
+    return n === 0 ? "today" : n === 1 ? "tomorrow" : n === -1 ? "yesterday" : n > 0 ? `in ${n} days` : `${-n} days ago`;
+  };
+
+  // rain / haze summary for every forecast hour inside one meal period
+  function periodWeather(iso, p) {
+    const day = WX.hours[iso];
+    if (!day) return null;
+    const sH = Math.floor(p.start / 60), eH = Math.ceil(Math.min(p.end, CLOSE) / 60) - 1;
+    const out = { mm: 0, maxProb: 0, maxPm: null, wet: [], hazy: [], n: 0 };
+    for (let h = sH; h <= eH; h++) {
+      const s = day[h], w = weatherAt(iso, h);
+      if (!s || !w) continue;
+      out.n++; out.mm += s.rain; out.maxProb = Math.max(out.maxProb, s.prob);
+      if (s.pm != null) out.maxPm = Math.max(out.maxPm || 0, s.pm);
+      if (w.weather === "Heavy rain") out.wet.push(h); else if (w.weather === "Haze") out.hazy.push(h);
+    }
+    return out.n ? out : null;
+  }
+
+  function evalService(iso, min) {
+    const sc = scenarioFor(iso, min, { forceLive: true }), dem = demand(sc), fz = fuzzyFor(sc);
+    return { sc, min, pred: predict(encode(sc)), used: usedDemand(dem, fz) };
+  }
+  // every hour of a meal period: lowest / highest demand and the worst hour
+  function serviceRange(iso, p) {
+    const sH = Math.floor(p.start / 60), eH = Math.ceil(Math.min(p.end, CLOSE) / 60) - 1;
+    let lo = null, hi = null;
+    for (let h = sH; h <= eH; h++) {
+      const e = evalService(iso, Math.max(p.start, h * 60));
+      if (!lo || e.used < lo.used || (e.used === lo.used && RANK[e.pred.tier] > RANK[lo.pred.tier])) lo = e;
+      if (!hi || e.used > hi.used) hi = e;
+    }
+    return { lo, hi };
+  }
+  const listDays = (arr, of) => (arr.length <= 3 ? arr.join(", ") : `${arr.length} of the next ${of} days`);
+
+  let AN_SIG = "";
+  function renderAnalysis() {
+    const iso = state.date;
+    const sig = [iso, todayKL(), WX.updated, WX.status, state.shortBreak, state.basis, state.batch].join("|");
+    if (sig === AN_SIG) return;
+    AN_SIG = sig;
+    $("an-day").textContent = `${DAY_FULL[CFG.days[dowIdx(iso)]]} ${shortDate(iso)}`;
+
+    // 1. this day, meal by meal
+    $("an-meals").innerHTML = PERIODS.filter((p) => !p.gap).map((p) => {
+      const w = periodWeather(iso, p), { lo, hi } = serviceRange(iso, p);
+      const a = Math.round(lo.used * 100), b = Math.round(hi.used * 100);
+      const pctTxt = a === b ? `${a}%` : `${a}–${b}%`;
+      const worstAt = a === b ? "" : ` · lowest at ${fmtTime(lo.min).replace(":00", "")}`;
+      let ico, verdict;
+      if (!w) [ico, verdict] = ["·", WX.status === "loading" ? "Loading…" : "No forecast · assumed dry"];
+      else if (w.wet.length) [ico, verdict] = ["🌧️", `${w.mm >= RULES.heavyRainMm ? "Heavy rain" : "Rain likely"} ${hourRanges(w.wet)}`];
+      else if (w.hazy.length) [ico, verdict] = ["🌫️", `Haze ${hourRanges(w.hazy)}`];
+      else if (w.mm >= 0.1) [ico, verdict] = ["🌦️", "Light showers only"];
+      else [ico, verdict] = ["☀️", "Dry"];
+      const detail = (w ? `${w.mm.toFixed(1)} mm · up to ${Math.round(w.maxProb)}% chance${w.maxPm != null ? ` · PM2.5 ≤ ${Math.round(w.maxPm)}` : ""}` : "") + worstAt;
+      const sel = periodOf(state.time).key === p.key;
+      return `<button type="button" class="an-meal${sel ? " sel" : ""}" data-min="${REP_MIN[p.key]}" style="--pc:${p.color}" title="Show ${p.name.toLowerCase()} in the advisor">
+        <span class="an-p">${p.icon} ${p.name}<small>${fmtTime(p.start).replace(":00", "")}–${fmtTime(Math.min(p.end, CLOSE)).replace(":00", "")}</small></span>
+        <span class="an-w">${ico} <b>${verdict}</b>${detail ? `<small>${detail}</small>` : ""}</span>
+        <span class="an-r" title="Expected demand across the service (% of a normal weekday) · worst-hour risk"><span class="an-pct">${pctTxt}</span><span class="t t-${lo.pred.tier}">${lo.pred.tier}</span></span></button>`;
+    }).join("");
+    $("an-meals").querySelectorAll(".an-meal").forEach((b) => (b.onclick = () => setTime(+b.dataset.min)));
+
+    // 2. headlines: calendar now / next change / next holiday / 7-day weather / riskiest service
+    const heads = [];
+    const c = calendarFor(iso);
+    heads.push(["📘", `<b>${c.title}</b>: ${xf(calMult(c.calendar))}${c.calendar === "Exam week" ? " (students stay in to revise)" : c.calendar === "Holiday / break" ? " (most students leave campus)" : ""}.`]);
+
+    const key = (cc) => (cc.holiday ? null : /^Lecture week/.test(cc.title) ? "Lectures" : cc.title);
+    let base = null;
+    for (let k = 0; k < 150; k++) {
+      const d = addDays(iso, k), cc = calendarFor(d), kk = key(cc);
+      if (kk == null) continue;
+      if (base == null) { base = kk; continue; }
+      if (kk !== base) {
+        heads.push(["🗓️", `Next: <b>${cc.title}</b> from ${dayName(d)} (${daysAway(d)}) → ${xf(calMult(cc.calendar))}.`]);
+        break;
+      }
+    }
+
+    const hol = HOLIDAY_LIST.find((h) => h.date >= iso);
+    if (hol) heads.push(["🏖️", hol.date === iso
+      ? `<b>${hol.name}</b> is a public holiday (${hol.src}): ${xf(M.holiday)}.`
+      : `Next public holiday: <b>${hol.name}</b>, ${dayName(hol.date)} (${daysAway(hol.date)}).`]);
+
+    if (WX.last) {
+      const L = PERIODS.find((p) => p.key === "lunch"), Dn = PERIODS.find((p) => p.key === "dinner");
+      const wetL = [], wetD = [], hazy = [];
+      let aqDays = 0, fcDays = 0;
+      for (let k = 0; k < 7; k++) {
+        const d = addDays(iso, k);
+        if (!WX.hours[d]) continue;
+        fcDays++;
+        const l = periodWeather(d, L), n = periodWeather(d, Dn);
+        if (l && l.wet.length) wetL.push(dayName(d));
+        if (n && n.wet.length) wetD.push(dayName(d));
+        const pms = WX.hours[d].filter((s) => s && s.pm != null);
+        if (pms.length) { aqDays++; if (pms.some((s) => s.pm >= RULES.hazePm25)) hazy.push(dayName(d)); }
+      }
+      if (fcDays) {
+        heads.push(["🌧️", wetL.length || wetD.length
+          ? `Heavy rain forecast${wetL.length ? ` at lunch on <b>${listDays(wetL, fcDays)}</b>` : ""}${wetL.length && wetD.length ? ";" : ""}${wetD.length ? ` at dinner on <b>${listDays(wetD, fcDays)}</b>` : ""} → ${xf(M.heavy_rain)} in those hours.`
+          : `No heavy rain forecast at lunch or dinner over the next ${fcDays} day${fcDays > 1 ? "s" : ""}.`]);
+        if (aqDays) heads.push(["🌫️", hazy.length
+          ? `Haze (PM2.5 ≥ ${RULES.hazePm25}) expected on <b>${listDays(hazy, aqDays)}</b> → ${xf(M.haze)}.`
+          : `Air quality stays good (PM2.5 below ${RULES.hazePm25}) for the ${aqDays} day${aqDays > 1 ? "s" : ""} with air-quality data.`]);
+      }
+      let worst = null;
+      for (let k = 0; k < 7; k++) {
+        const d = addDays(iso, k);
+        for (const p of [L, Dn]) {
+          const { lo } = serviceRange(d, p);
+          if (!worst || lo.used < worst.used) worst = { ...lo, d };
+        }
+      }
+      if (worst) heads.push(["⚠️", worst.pred.tier === "Low"
+        ? "Every lunch and dinner in the next 7 days looks <b>Low</b> risk: cook as usual."
+        : `Riskiest service this week: <b>${dayName(worst.d)} ${periodOf(worst.min).name.toLowerCase()}</b> around ${fmtTime(worst.min).replace(":00", "")}, ${Math.round(worst.used * 100)}% of normal demand (<span class="t t-${worst.pred.tier}">${worst.pred.tier}</span>) → cook about ${Math.round(state.batch * worst.used)} of your usual ${state.batch}.`]);
+      heads.push(["🛰️", iso > WX.last
+        ? `This date is past the 16-day forecast (ends ${shortDate(WX.last)}), so weather is assumed clear.`
+        : `Forecast runs to ${shortDate(WX.last)} (air quality about 5 days). Updated ${clock(WX.updated)}, refreshes every 10 min.`]);
+    } else {
+      heads.push(["🛰️", WX.status === "loading" ? "Loading the weather forecast…" : "Weather forecast unavailable: weather is assumed clear."]);
+    }
+    $("an-heads").innerHTML = heads.map(([i, t]) => `<li><span class="an-i">${i}</span><span>${t}</span></li>`).join("");
+    const ph = PH.updated ? ` · holidays pulled ${PH.updated.slice(0, 10)}` : "";
+    $("an-note").textContent = `Open-Meteo forecast · UTP academic calendar · Perak public holidays${ph}`;
   }
 
   /* -------------------------------------------------------------- render */
@@ -577,6 +758,8 @@
     const rec = Math.round(state.batch * used);
     renderTime(sc, rec);
     renderLive(sc);
+    renderAnalysis();
+    document.querySelectorAll("#an-meals .an-meal").forEach((b) => b.classList.toggle("sel", periodOf(+b.dataset.min).key === sc.period.key));
 
     const when = state.live ? `${DAY_FULL[sc.day]} ${shortDate(sc.date)}` : DAY_FULL[sc.day];
     $("scenario-title").textContent = `${$("cafe").value} · ${when} · ${sc.period.name} (${fmtTime(sc.period.start)} – ${fmtTime(Math.min(sc.period.end, CLOSE))})`;
@@ -1604,6 +1787,7 @@
       [document.querySelector(".risk-title"), "g-risk"],
       [document.querySelector(".kpi.primary .kpi-lbl"), "g-kpi"],
       [document.querySelector(".fuzzy-card h3"), "g-fuzzy"],
+      [headingWith("#tab-predict h3", "Automatic forecast"), "g-analysis"],
       [headingWith("#tab-predict h3", "Cooking"), "g-plan"],
       [headingWith("#tab-predict h3", "Why the model"), "g-why"],
       [headingWith("#tab-predict h3", "Next 7 days"), "g-week"],
