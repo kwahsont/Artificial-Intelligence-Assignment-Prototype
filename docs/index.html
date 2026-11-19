@@ -86,12 +86,18 @@
             <option>Village 7 Cafeteria</option><option>Other campus outlet</option>
           </select>
 
-          <span class="field-label">Academic calendar <span class="badge" id="b-cal"></span></span>
-          <div class="segmented" id="cal-seg"></div>
+          <span class="field-label">Detected automatically</span>
+          <div class="auto-box" id="auto-box" aria-live="polite"></div>
 
-          <span class="field-label">Weather <span class="badge" id="b-wx"></span></span>
-          <div class="segmented" id="wx-seg"></div>
-          <button type="button" class="link-btn" id="reset-live" hidden>↺ Back to live calendar &amp; weather</button>
+          <details class="whatif" id="whatif">
+            <summary>What-if overrides <span class="whatif-sub">set calendar &amp; weather by hand</span></summary>
+            <span class="field-label">Academic calendar <span class="badge" id="b-cal"></span></span>
+            <div class="segmented" id="cal-seg"></div>
+
+            <span class="field-label">Weather <span class="badge" id="b-wx"></span></span>
+            <div class="segmented" id="wx-seg"></div>
+            <button type="button" class="link-btn" id="reset-live" hidden>↺ Back to live calendar &amp; weather</button>
+          </details>
 
           <label class="toggle">
             <input type="checkbox" id="short-break">
@@ -151,6 +157,23 @@
                 <span class="live-lbl">Academic calendar</span>
                 <strong id="cal-title">–</strong>
                 <span class="live-sub" id="cal-sub">–</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card analysis-card" id="analysis-card">
+            <div class="card-head">
+              <h3>🔎 Automatic forecast &amp; calendar analysis</h3>
+              <span class="muted small" id="an-note">Open-Meteo forecast · UTP academic calendar · Perak public holidays</span>
+            </div>
+            <div class="an-grid">
+              <div>
+                <h4 class="an-h">Weather by meal · <span id="an-day">–</span></h4>
+                <div class="an-meals" id="an-meals"></div>
+              </div>
+              <div>
+                <h4 class="an-h">What's coming up</h4>
+                <ul class="an-heads" id="an-heads"></ul>
               </div>
             </div>
           </div>
@@ -372,7 +395,7 @@
             <li><strong>Heavy rain:</strong> at least <span id="r-rain">1</span> mm of rain in that hour, or a rain chance of at least <span id="r-prob">75</span>%.</li>
             <li><strong>Haze:</strong> PM2.5 of at least <span id="r-pm">35</span> µg/m³ in that hour (Malaysian 24-hour standard), from the Open-Meteo air-quality forecast (about 5 days ahead).</li>
             <li><strong>Meal periods:</strong> breakfast 7:00–10:30, lunch 11:00–15:00, tea 15:00–17:00, dinner 17:00–21:00, supper 21:00–23:00. The survey covered lunch and dinner. Other periods use dinner-style rules and are labelled as not surveyed.</li>
-            <li><strong>Calendar:</strong> lecture weeks, study break, exams, semester breaks, orientation, blended-learning and "no physical class on campus" weeks, and public holidays come from <code>docs/data/academic_calendar.js</code>. Orientation and no-class weeks count as <em>Holiday / break</em>, and study break counts as <em>Exam week</em>. <span id="cal-verify"></span></li>
+            <li><strong>Calendar:</strong> lecture weeks, study break, exams, semester breaks, orientation, blended-learning and "no physical class on campus" weeks, and the holidays printed in the UTP calendar come from <code>docs/data/academic_calendar.js</code>. Perak public holidays (federal + state, including replacement days) are also pulled automatically into <code>docs/data/public_holidays.js</code> by <code>src/update_holidays.py</code>, which a GitHub Action reruns every week; a date in either list counts as a holiday. Orientation and no-class weeks count as <em>Holiday / break</em>, and study break counts as <em>Exam week</em>. <span id="cal-verify"></span></li>
             <li>Beyond the forecast range, or if you're offline, the weather falls back to <em>Clear</em>. You can override any live value by hand.</li>
           </ul>
         </div>
@@ -458,6 +481,7 @@
           <a href="#g-time">3 · Time of service</a>
           <a href="#g-calc">4 · Live calculation</a>
           <a href="#g-live">5 · Weather &amp; calendar</a>
+          <a href="#g-analysis">5b · Automatic analysis</a>
           <a href="#g-risk">6 · Risk card</a>
           <a href="#g-kpi">7 · Savings tiles</a>
           <a href="#g-fuzzy">8 · Fuzzy logic view</a>
@@ -514,12 +538,11 @@
           <article class="card g-item" id="g-inputs">
             <h3><span class="g-num">1</span> Plan a service (left panel)</h3>
             <div class="g-grid">
-              <div><h4>What it tells you</h4><p>The situation you are planning for. In <b>Live data</b> mode the day, academic calendar and weather fill themselves in; you only choose the date, time and batch size.</p></div>
+              <div><h4>What it tells you</h4><p>The situation you are planning for. The day, academic calendar and weather are <b>detected automatically</b> from the live forecast, the UTP calendar and the Perak public-holiday list; you only choose the date, time and batch size.</p></div>
               <div><h4>How to use it</h4><ul>
-                <li><b>Live data switch</b> — ON: automatic. OFF: manual "what-if" mode where you set everything yourself.</li>
-                <li><b>LIVE / MANUAL tags</b> — show whether a value came from live data or you changed it. <b>↺ Back to live</b> undoes your changes.</li>
-                <li><b>Academic calendar</b> — Normal week / Exam week / Holiday. Click one to override.</li>
-                <li><b>Weather</b> — Clear / Heavy rain / Haze. Click one to override the forecast.</li>
+                <li><b>Detected automatically</b> — the day of the week, the calendar period (e.g. <i>Lecture week 11</i>, <i>Final examination</i>, a public holiday) and the forecast for the chosen hour, each with its effect on student footfall.</li>
+                <li><b>What-if overrides</b> (folded away) — set the calendar (Normal / Exam / Holiday) or weather (Clear / Heavy rain / Haze) by hand to test a scenario. A warning appears while an override is on; <b>↺ Back to live</b> undoes it.</li>
+                <li><b>Live data switch</b> — OFF turns the whole panel into manual what-if mode.</li>
                 <li><b>Short class breaks</b> — switch on if most classes have &lt; 1-hour breaks (students skip lunch more).</li>
                 <li><b>Usual batch</b> — your normal-day portions. Everything is scaled from this number.</li>
               </ul></div>
@@ -584,6 +607,19 @@
               </ul></div>
             </div>
             <button type="button" class="g-jump" data-tab="predict" data-jump=".live-strip">Show me →</button>
+          </article>
+
+          <article class="card g-item" id="g-analysis">
+            <h3><span class="g-num">5b</span> Automatic forecast &amp; calendar analysis</h3>
+            <div class="g-grid">
+              <div><h4>What it tells you</h4><p>The system's own reading of the forecast and calendar, with no input from you: how each meal of the chosen day looks, and what is coming up in the days ahead.</p></div>
+              <div><h4>How to read it</h4><ul>
+                <li><b>Weather by meal</b> — rain or haze hours in each service, total rain, rain chance and PM2.5, then the expected demand across the service (e.g. <i>45–82%</i>) and the worst-hour risk tier. Click a row to jump the advisor to that meal.</li>
+                <li><b>What's coming up</b> — the current calendar period, the next change (e.g. study break in 9 days), the next public holiday, rain and haze over the next 7 days, the riskiest lunch or dinner of the week, and how far ahead the forecast reaches.</li>
+                <li>It always uses the live data, even while a what-if override is on.</li>
+              </ul></div>
+            </div>
+            <button type="button" class="g-jump" data-tab="predict" data-jump="#analysis-card">Show me →</button>
           </article>
 
           <article class="card g-item" id="g-risk">
@@ -780,6 +816,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
   <script src="data/dashboard_data.js"></script>
   <script src="data/academic_calendar.js"></script>
+  <script src="data/public_holidays.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>
