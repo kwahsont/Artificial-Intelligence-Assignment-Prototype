@@ -5,6 +5,10 @@ name: Deploy dashboard to GitHub Pages
 on:
   push:
     branches: ["main"]
+  # commits made by the weekly holiday update don't trigger "push", so redeploy after it
+  workflow_run:
+    workflows: ["Update public holidays"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
